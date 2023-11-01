@@ -9,7 +9,10 @@ USER deno
 # The working directory
 WORKDIR /app
 
-RUN "chown -R deno:deno /app"
+
+RUN which chown
+RUN chown -R deno:deno /app
+
 
 # Copy contents to the WORKDIR
 COPY . .
