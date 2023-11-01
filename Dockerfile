@@ -1,6 +1,6 @@
 FROM denoland/deno:ubuntu-1.37.2
 
-
+RUN apt update
 RUN apt install sudo
 # The port your application listens to.
 EXPOSE 80
