@@ -5,18 +5,17 @@ RUN apt install sudo
 # The port your application listens to.
 EXPOSE 80
 
+# Give the permission to use /app to the user 'deno'
+RUN echo deno:deno | chpasswd
+RUN adduser deno sudo
+RUN echo "user ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+RUN sudo chown -R deno:deno /app
+
 # Prefer not to run as root.
 USER deno
 
-RUN echo "deno:deno" | chpasswd
-RUN adduser deno sudo
-RUN echo "user ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-
 # The working directory
 WORKDIR /app
-
-RUN sudo chown -R deno:deno /app
-
 
 # Add contents to the WORKDIR
 ADD . .
