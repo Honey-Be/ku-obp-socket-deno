@@ -8,7 +8,9 @@ EXPOSE 80
 # Prefer not to run as root.
 USER deno
 
-RUN echo "deno:deno" | chpasswd && adduser deno sudo echo "user ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+RUN echo "deno:deno" | chpasswd
+RUN adduser deno sudo
+RUN echo "user ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # The working directory
 WORKDIR /app
