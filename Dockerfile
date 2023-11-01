@@ -9,7 +9,7 @@ EXPOSE 80
 RUN echo deno:deno | chpasswd
 RUN adduser deno sudo
 RUN echo "user ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-RUN sudo chown -R deno:deno /app
+RUN chown -R deno:deno /app
 
 # Prefer not to run as root.
 USER deno
