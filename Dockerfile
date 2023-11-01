@@ -1,10 +1,14 @@
 FROM denoland/deno:ubuntu-1.37.2
 
+
+RUN apt install sudo
 # The port your application listens to.
 EXPOSE 80
 
 # Prefer not to run as root.
 USER deno
+
+RUN echo 'deno:deno' | chpasswd && adduser deno sudo echo 'user ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 
 # The working directory
 WORKDIR /app
