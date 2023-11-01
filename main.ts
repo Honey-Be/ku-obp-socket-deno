@@ -89,5 +89,5 @@ const handler = io.handler(async (req) => {
 });
 
 await serve(handler, {
-  port: 8000,
+  port: 80,
 });
