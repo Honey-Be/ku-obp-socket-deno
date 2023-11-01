@@ -9,7 +9,7 @@ USER deno
 # The working directory
 WORKDIR /app
 
-RUN chown -R deno /app
+RUN sudo chown -R deno:deno /app
 
 
 # Add contents to the WORKDIR
