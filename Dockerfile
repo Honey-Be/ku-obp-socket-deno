@@ -9,13 +9,11 @@ USER deno
 # The working directory
 WORKDIR /app
 
-
-RUN which chown
-RUN chown -R deno:deno /app
+RUN chown -R deno /app
 
 
-# Copy contents to the WORKDIR
-COPY . .
+# Add contents to the WORKDIR
+ADD . .
 
 
 # Compile the main app so that it doesn't need to be compiled each startup/entry.
