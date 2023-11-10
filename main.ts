@@ -28,6 +28,19 @@ type GameTrading = {
   };
 };
 
+export interface historyAction {
+  time: string;
+  action: string;
+}
+
+export function history(action: string): historyAction {
+  const time = new Date().toJSON();
+  return {
+      action,
+      time,
+  } as historyAction;
+}
+
 export const MonopolyModes = [
   {
       AllowDeals: true,
@@ -316,6 +329,14 @@ class ClientsMap {
       x.socket.emit(event, args)
     }
   }
+
+  public emitExcepts<T>(socketId: string, event: string, args: T) {
+    for(const [id, x] of this.internal.entries()) {
+      if (id !== socketId) {
+        x.socket.emit(event, args)
+      }
+    }
+  }
 }
 const roomKeys: Set<string> = new Set();
 
@@ -433,7 +454,7 @@ io.on("connection", (socket) => {
 
 
 
-  
+
   const eventsRegistry: PrimitiveEventsRegistry = new PrimitiveEventsRegistry();
   
 
@@ -531,13 +552,17 @@ io.on("connection", (socket) => {
     const client = clientsMap.getClient(socket.id)
     if(client === undefined) {
       return;
-    } else {
-      console.log(socket.id + " has leaved this room");
+    } else if(client.player.balance > 0) {
+      console.log(client.socket.id + " has leaved this room");
       socket.broadcast.to(roomKey).emit("roomExplosion");
 
       clientsInfo.delete(roomKey)
       delete monopolyStatus[roomKey];
       roomKeys.delete(roomKey);
+    } else {
+      console.log(client.socket.id + " has leaved this room");
+
+      clientsMap.deleteClient(client.socket.id)
     }
   });
 
@@ -578,7 +603,7 @@ io.on("connection", (socket) => {
       }
     })
 
-    eventsRegistry.register("roll_dice", (client, logger) => {
+    eventsRegistry.register("rollDice", (client, logger) => {
       return () => {
         try {
           const first = Math.floor(Math.random() * 6) + 1;
@@ -588,7 +613,7 @@ io.on("connection", (socket) => {
           console.log(x);
           const sum = first + second;
           const pos = (client.player.position + sum) % 40;
-          clientsMap.emitAll("dice_roll_result", {
+          clientsMap.emitAll("diceRollResult", {
             listOfNums: [first, second, pos],
             turnId: currentTurnId[roomKey],
           });
@@ -598,12 +623,12 @@ io.on("connection", (socket) => {
       }
     })
 
-    eventsRegistry.register("chorch_roll", (client, logger) => {
+    eventsRegistry.register("chorchRoll", (_client, _logger) => {
       return (args: { is_chance: boolean; rolls: number }) => {
         try {
             const arr = args.is_chance ? monopolyJSON.chance : monopolyJSON.communitychest;
             const randomElement = arr[Math.floor(Math.random() * arr.length)];
-            clientsMap.emitAll("chorch_result", {
+            clientsMap.emitAll("chorchResult", {
                 element: randomElement,
                 is_chance: args.is_chance,
                 rolls: args.rolls,
@@ -615,8 +640,151 @@ io.on("connection", (socket) => {
       }
     })
 
+    eventsRegistry.register("playerUpdate", (_client, _logger) => {
+      return (args: { playerId: string; pJson: MonopolyPlayerJSON }) => {
+        const xplayer = clientsMap.getClient(args.playerId);
+        if (xplayer === undefined) return;
 
+        xplayer.player.recieveJson(args.pJson);
+        clientsMap.emitExcepts(args.playerId, "player_update", args);
+      }
+    })
 
+    eventsRegistry.register("finish-turn", (client, _logger) => {
+      return (playerInfo: MonopolyPlayerJSON) => {
+        try {
+            client.player.recieveJson(playerInfo);
+            if (currentTurnId[roomKey] != socket.id) return;
+            const arr = Array.from(clientsMap.values)
+                .filter((v) => v.player.balance > 0)
+                .map((v) => v.player.id);
+            let i = arr.indexOf(socket.id);
+            i = (i + 1) % arr.length;
+            currentTurnId[roomKey] = arr[i];
+
+            clientsMap.emitAll("turn-finished", {
+                from: socket.id,
+                turnId: currentTurnId[roomKey],
+                pJson: client.player.toJson(),
+                WinningMode: monopolyStatus[roomKey].mode.WinningMode,
+            });
+        } catch (e) {
+            console.log(e);
+        }
+    }
+    })
+
+    eventsRegistry.register("pay", (_client, _logger) => {
+      return (args: { balance: number; from: string; to: string }) => {
+        try {
+          const top = clientsMap.getClient(args.to)?.player;
+          const fromp = clientsMap.getClient(args.from)?.player;
+          if (top === undefined) return;
+          top.balance += args.balance;
+          if (fromp === undefined) return;
+          fromp.balance -= args.balance;
+          clientsMap.emitAll("member_updating", {
+            playerId: args.to,
+            animation: "recieveMoney",
+            additional_props: [args.from],
+            pJson: [top.toJson(), fromp.toJson()] as [MonopolyPlayerJSON, MonopolyPlayerJSON],
+          });
+        }
+        catch (e) {
+          console.log(e);
+        }
+      }
+    })
+
+    eventsRegistry.register("mouse", (_client, _logger) => {
+      return (args: { x: number; y: number }) => {
+        const client = clientsMap.getClient(socket.id)
+        if(client === undefined) {
+          return;
+        }
+        client.positions = args
+        
+        clientsMap.emitExcepts(socket.id, "mouse", {
+          id: socket.id,
+          ...args,
+        })
+      }
+    })
+
+    eventsRegistry.register("history", (_client, _logger) => {
+      return (args: historyAction) => {
+        clientsMap.emitAll("history", args)
+      }
+    })
+
+    eventsRegistry.register("trade", (_client, _logger) => {
+      return () => {
+        if (!monopolyStatus[roomKey].mode.AllowDeals) return;
+        clientsMap.emitAll("trade", {});
+      }
+    })
+
+    eventsRegistry.register("cancelTrade", (_client, _logger) => {
+      return () => {
+        return () => {
+          if (!monopolyStatus[roomKey].mode.AllowDeals) return;
+          clientsMap.emitAll("cancelTrade", {});
+        }
+      }
+    })
+
+    eventsRegistry.register("submit-trade", (_client, _logger) => {
+      return (x: GameTrading) => {
+        if (!monopolyStatus[roomKey].mode.AllowDeals) return;
+        const turnPlayer = clientsMap.getClient(x.turnPlayer.id);
+        const againstPlayer = clientsMap.getClient(x.againstPlayer.id);
+        if (turnPlayer === undefined || againstPlayer === undefined) return;
+
+        // Exclude against
+        const turnGets = againstPlayer.player.properties.filter((v1) =>
+          x.againstPlayer.prop.map((v2) => JSON.stringify(v2)).includes(JSON.stringify(v1))
+        );
+        againstPlayer.player.properties = againstPlayer.player.properties.filter(
+          (v1) => !x.againstPlayer.prop.map((v2) => JSON.stringify(v2)).includes(JSON.stringify(v1))
+        );
+
+        // Exclude turn
+        const againsGets = againstPlayer.player.properties.filter((v1) =>
+          x.turnPlayer.prop.map((v2) => JSON.stringify(v2)).includes(JSON.stringify(v1))
+        );
+        turnPlayer.player.properties = againstPlayer.player.properties.filter(
+          (v1) => !x.turnPlayer.prop.map((v2) => JSON.stringify(v2)).includes(JSON.stringify(v1))
+        );
+
+        // Now Balance
+        againstPlayer.player.balance -= x.againstPlayer.balance;
+        turnPlayer.player.balance -= x.turnPlayer.balance;
+
+        turnPlayer.player.balance += x.againstPlayer.balance;
+        againstPlayer.player.balance += x.turnPlayer.balance;
+
+        // Exclude switch
+        turnPlayer.player.properties.push(...turnGets);
+        againstPlayer.player.properties.push(...againsGets);
+
+        clientsMap.emitAll(
+          "submit-trade",
+          {
+            pJsons: [turnPlayer.player.toJson(), againstPlayer.player.toJson()] as [MonopolyPlayerJSON, MonopolyPlayerJSON],
+            action: `
+              ${turnPlayer.player.name} done a trade with ${againstPlayer.player.name}
+            `,
+          }
+        );
+      }
+    })
+
+    eventsRegistry.register("tradeUpdate", (_client, _logger) => {
+      return (x: GameTrading) => {
+        if (!monopolyStatus[roomKey].mode.AllowDeals) return;
+        clientsMap.emitAll("trade-update", x);
+      }
+    })
 
     socket.broadcast.to(roomKey).emit("startGame", {})
   }
@@ -664,12 +832,6 @@ io.on("connection", (socket) => {
       }
     }
   })
-
-  /*
-  socket.on("turnAction", ({ roomKey, action }: { roomKey: string, action: ActionType }) => {
-    socket.broadcast.to(roomKey).emit("turnAction", action);
-  });
-  */
 });
 
 const handler = io.handler(async (req) => {
