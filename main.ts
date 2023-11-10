@@ -656,7 +656,7 @@ io.on("connection", (socket) => {
             client.player.recieveJson(playerInfo);
             if (currentTurnId[roomKey] != socket.id) return;
             const arr = Array.from(clientsMap.values)
-                .filter((v) => v.player.balance > 0)
+                .filter((v) => v.player.balance > 0).sort((a, b) => a.player.ord - b.player.ord)
                 .map((v) => v.player.id);
             let i = arr.indexOf(socket.id);
             i = (i + 1) % arr.length;
@@ -785,6 +785,8 @@ io.on("connection", (socket) => {
         clientsMap.emitAll("trade-update", x);
       }
     })
+
+    eventsRegistry.attach(clientsMap)
 
     socket.broadcast.to(roomKey).emit("startGame", {})
   }
