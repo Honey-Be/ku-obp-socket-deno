@@ -78,6 +78,8 @@
     "https://deno.land/std@0.166.0/async/pool.ts": "ef9eb97b388543acbf0ac32647121e4dbe629236899586c4d4311a8770fbb239",
     "https://deno.land/std@0.166.0/async/tee.ts": "9af3a3e7612af75861308b52249e167f5ebc3dcfc8a1a4d45462d96606ee2b70",
     "https://deno.land/std@0.166.0/http/server.ts": "e99c1bee8a3f6571ee4cdeb2966efad465b8f6fe62bec1bdb59c1f007cc4d155",
+    "https://deno.land/x/earray@1.0.0/mod.ts": "9f54dedf56dec34ed55ff580fea12bf739ca04d085f332e563c78bb369792b67",
+    "https://deno.land/x/earray@1.0.0/src/ArrayExtend.ts": "ca17847341c6f8dbe1165b44c65dff007a27c23440425f3118b8519e4ea885fb",
     "https://deno.land/x/it_range@v1.0.3/range.mjs": "a4a57f1884290c70546378cfd9e4503ff59de83948c667f6da419d8ef6e88e33",
     "https://deno.land/x/oak@v11.1.0/application.ts": "0a728331822b8e27727ceec48a8499657c3163fc48fd379a8a9578a75f3cdb62",
     "https://deno.land/x/oak@v11.1.0/body.ts": "78402a4936accb80372c4944384658105604352d6783de7ff1e36b8832dd93c9",
