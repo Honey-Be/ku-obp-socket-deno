@@ -1,7 +1,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.166.0/http/server.ts";
 import { Server, Socket } from "https://deno.land/x/socket_io@0.2.0/mod.ts";
-import { Application } from "https://deno.land/x/oak@v11.1.0/mod.ts";
+import { Application, Context } from "https://deno.land/x/oak@v11.1.0/mod.ts";
 import { range } from "https://deno.land/x/it_range@v1.0.3/range.mjs";
 import { EArray } from "https://deno.land/x/earray@1.0.0/mod.ts";
 import monopolyJSON from "./monopoly.json" with {type: "json"}
@@ -835,6 +835,13 @@ io.on("connection", (socket) => {
     }
   })
 });
+
+const greet = (context: Context) => {
+  context.response.body = "Hello world!";
+};
+
+app.use(greet)
+
 
 const handler = io.handler(async (req) => {
   return await app.handle(req) || new Response(null, { status: 404 });
