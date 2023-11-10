@@ -215,12 +215,12 @@ interface CancelTradeAction {
 }
 
 interface SubmitTradeAction {
-  type: "suubmitTrade",
+  type: "submitTrade",
   args: {x: GameTrading}
 }
 
 interface TradeUpdateAction {
-  type: "suubmitTrade",
+  type: "tradeUpdate",
   args: {x: GameTrading}
 }
 
