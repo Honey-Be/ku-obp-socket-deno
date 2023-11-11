@@ -788,7 +788,7 @@ io.on("connection", (socket) => {
 
     eventsRegistry.attach(clientsMap)
 
-    socket.broadcast.to(roomID).emit("startGame", {})
+    socket.to(roomID).emit("startGame", {})
   }
 
 
