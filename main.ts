@@ -2,8 +2,7 @@
 import { serve } from "https://deno.land/std@0.166.0/http/server.ts";
 import { Server, Socket } from "https://deno.land/x/socket_io@0.2.0/mod.ts";
 import { Application, Context } from "https://deno.land/x/oak@v11.1.0/mod.ts";
-import { range } from "https://deno.land/x/it_range@v1.0.3/range.mjs";
-import { EArray } from "https://deno.land/x/earray@1.0.0/mod.ts";
+import { shuffleArray } from "./lib/shuffle.ts";
 import monopolyJSON from "./monopoly.json" with {type: "json"}
 
 function getCurrentTime() {
@@ -91,7 +90,7 @@ export interface PlayerProprety {
 
 export class MonopolyPlayer {
   public id: string;
-  public name: string;
+  public username: string;
   public ord: number;
   public position: number;
   public balance: number;
@@ -101,12 +100,12 @@ export class MonopolyPlayer {
   public getoutCards: number;
   public ready: boolean;
   public positions: { x: number; y: number };
-  constructor() {
-      this.id = "";
+  constructor(id: string = "", username: string = "", cash: number = 1500) {
+      this.id = id;
       this.ord = -1;
-      this.name = "";
+      this.username = username;
       this.position = 0;
-      this.balance = 1500;
+      this.balance = cash;
       this.properties = [];
       this.isInJail = false;
       this.jailTurnsRemaining = 0;
@@ -116,6 +115,7 @@ export class MonopolyPlayer {
   }
   recieveJson(json: MonopolyPlayerJSON) {
       this.id = json.id;
+      this.username = json.username
       this.position = json.position;
       this.ord = json.ord;
       this.balance = json.balance;
@@ -129,7 +129,7 @@ export class MonopolyPlayer {
   public toJson() {
       return {
           id: this.id,
-          name: this.name,
+          username: this.username,
           balance: this.balance,
           ord: this.ord,
           isInJail: this.isInJail,
@@ -151,7 +151,7 @@ export class MonopolyPlayer {
 }
 export type MonopolyPlayerJSON = {
   id: string;
-  name: string;
+  username: string;
   ord: number;
   position: number;
   balance: number;
@@ -161,15 +161,15 @@ export type MonopolyPlayerJSON = {
   getoutCards: number;
 };
 
-type playerIDType = string | null
+type playerNameType = string | null
 
 interface MonopolyStatus {
-  roomKey: string | null;
+  roomID: string | null;
   size: 0 | 1 | 2 | 3 | 4 | 5 | 6;
   maxSize: 2 | 3 | 4 | 5 | 6;
-  hostID: string;
-  guestIDs: string[];
-  playerIDs: string[];
+  host: string | null;
+  guests: string[];
+  players: string[];
   isStarted: boolean;
   isEnded: boolean;
   mode: MonopolyMode;
@@ -221,7 +221,7 @@ interface TradeAction {
 }
 
 interface CancelTradeAction {
-  type: "cancelTrade",
+  type: "cancel-trade",
   args: undefined
 }
 
@@ -283,14 +283,14 @@ class ClientsMap {
     this.internal.set(socketId, newInfo);
   }
   public modifyClient(socketId: string, params: {
-    playerID?: string,
+    playerName?: string,
     playerOrd?: number,
     ready?: boolean,
     position?: number
   }) {
     const tmp: ClientInfo | undefined = this.getClient(socketId)
     if (tmp !== undefined) {
-      tmp.player.name = (params.playerID !== undefined) ? params.playerID : tmp.player.name;
+      tmp.player.username = (params.playerName !== undefined) ? params.playerName : tmp.player.username;
       tmp.ready = (params.ready !== undefined) ? params.ready : tmp.ready;
       tmp.player.position = (params.position !== undefined) ? params.position : tmp.player.position;
       tmp.player.ord = (params.playerOrd) ? params.playerOrd : tmp.player.ord
@@ -300,6 +300,10 @@ class ClientsMap {
 
   public deleteClient(socketId: string) {
     this.internal.delete(socketId)
+  }
+
+  public get socketIDs(): IterableIterator<string> {
+    return this.internal.keys()
   }
 
   public get values(): IterableIterator<ClientInfo> {
@@ -338,118 +342,34 @@ class ClientsMap {
     }
   }
 }
-const roomKeys: Set<string> = new Set();
+const roomIDs: Set<string> = new Set();
 
 const monopolyStatus: {
-  [roomKey: string]: MonopolyStatus
+  [roomID: string]: MonopolyStatus
 } = {};
 
 const clientsInfo: Map<string, ClientsMap> = new Map<string, ClientsMap>();
 
-interface MonopolyLobbyStatus {
-  roomKey: string | null;
-  size: 0 | 1 | 2 | 3 | 4 | 5 | 6;
-  maxSize: 2 | 3 | 4 | 5 | 6;
-  hostID: playerIDType;
-  guestIDs: playerIDType[];
-  mode: MonopolyMode;
-}
+const currentTurnId: {
+  [roomID: string]: string
+} = {};
 
-const initialMonopolyLobbyStatus: MonopolyLobbyStatus = {
-  roomKey: null,
+const initialMonopolyStatus: MonopolyStatus = {
+  roomID: null,
   size: 0,
   maxSize: 6,
-  hostID: null,
-  guestIDs: [] as playerIDType[],
+  host: null,
+  guests: [] as string[],
+  players: [] as string[],
+  isStarted: false,
+  isEnded: false,
   mode: MonopolyModes[0]
 };
-
-const monopolyLobbyStatus: {
-  [roomKey: string]: MonopolyLobbyStatus
-} = {};
-
-const currentTurnId: {
-  [roomKey: string]: string
-} = {};
 
 
 io.on("connection", (socket) => {
   console.log(`socket ${socket.id} connected`);
 
-  // SKIP THIS COMMENTED REGION
-  /*
-  socket.on("joinLobby", ({ playerName, roomKey, maxSize = 6, selectedMode = MonopolyModes[0] }: { playerName: string, roomKey: string, maxSize: 2 | 3 | 4 | 5 | 6, selectedMode: MonopolyMode }) => {
-    console.log(playerName, roomKey);
-    
-    if(!monopolyStatus[roomKey]) {
-      monopolyStatus[roomKey] = {...initialMonopolyStatus};
-      monopolyStatus[roomKey].roomKey = roomKey;
-      monopolyStatus[roomKey].mode = selectedMode;
-      roomKeys.add(roomKey);
-    }
-    
-    if (monopolyStatus[roomKey].host && monopolyStatus[roomKey].guests.length == (monopolyStatus[roomKey].maxSize - 1) ) {
-      console.log(monopolyStatus);
-      console.log(monopolyStatus[roomKey]);
-      socket.emit("joinFailed", "Lobby is full now");
-      return;
-    }
-    
-    socket.join(roomKey);
-    clientsInfo.setClient(socket.id, { playerName, socket, roomKey, ready: false, position: [0,0] });
-    console.log(`${playerName}(${socket.id}) has connected to ${roomKey}`);
-
-    if (monopolyStatus[roomKey].host === null) {
-      monopolyStatus[roomKey].maxSize = maxSize
-      monopolyStatus[roomKey].guests = Array.from(range(0,(maxSize-1) as number)).map((_) => null as (string | null))
-      monopolyStatus[roomKey].players = Array.from(range(0,maxSize)).map((_) => null as (string | null))
-      monopolyStatus[roomKey].size += 1;
-      monopolyStatus[roomKey].host = playerName
-      const rv: number = Math.random();
-      const num = Array.from(range(0, monopolyStatus[roomKey].maxSize)).filter((value, _index, _obj) => {
-        const ratio = (value+1) / monopolyStatus[roomKey].maxSize;
-        return (rv < ratio);
-      })[0]
-      monopolyStatus[roomKey].players[num] = playerName;
-    } else if (monopolyStatus[roomKey].host !== playerName) {
-      monopolyStatus[roomKey].size += 1;
-      monopolyStatus[roomKey].guests.push(playerName);
-      const rv: number = Math.random()
-
-      let flag_color = false;
-      const memo: Array<number | null> = Array.from(range(0, monopolyStatus[roomKey].maxSize))
-      for(const pn of range(0, monopolyStatus[roomKey].maxSize)) {
-        if(monopolyStatus[roomKey].players[pn] !== null) {
-          memo[pn] = null
-        }
-      }
-      const memo2: Array<number> = memo.filter((value) => (value !== null)).map((value) => (value as number));
-      const remaining = memo2.length
-      for(const num of range(0,remaining)) {
-        const ratio = (num+1) / remaining;
-        if(!flag_color) {
-          if(rv < ratio) {
-            monopolyStatus[roomKey].players[memo2[num]] = playerName;
-            flag_color = true;
-          }
-        } else {
-          break;
-        }
-      }
-
-      if(monopolyStatus[roomKey].size >= monopolyStatus[roomKey].maxSize) {
-        monopolyStatus[roomKey].isStarted = true;
-      }
-    }
-
-    const color = COLORMAP[monopolyStatus[roomKey].players.indexOf(playerName)];
-    socket.emit("color", color)
-    io.to(roomKey).emit("isStarted", monopolyStatus[roomKey].isStarted);
-
-    console.log(monopolyStatus[roomKey])
-  })
-
-  */
 
 
 
@@ -459,45 +379,44 @@ io.on("connection", (socket) => {
   
 
 
-  socket.on("joinLobby", ({ playerID, roomKey, maxSize = 6, selectedMode = MonopolyModes[0] }: { playerID: string, roomKey: string, maxSize: 2 | 3 | 4 | 5 | 6, selectedMode: MonopolyMode }) => {
-    console.log(playerID, roomKey);
+  socket.on("joinLobby", ({ playerName, roomID, maxSize = 6, selectedMode = MonopolyModes[0] }: { playerName: string, roomID: string, maxSize: 2 | 3 | 4 | 5 | 6, selectedMode: MonopolyMode }) => {
+    console.log(playerName, roomID);
     
-    if(!monopolyLobbyStatus[roomKey]) {
-      monopolyLobbyStatus[roomKey] = {...initialMonopolyLobbyStatus};
-      monopolyLobbyStatus[roomKey].roomKey = roomKey;
-      monopolyLobbyStatus[roomKey].mode = selectedMode;
-      roomKeys.add(roomKey);
+    if(!monopolyStatus[roomID]) {
+      monopolyStatus[roomID] = {...initialMonopolyStatus};
+      monopolyStatus[roomID].roomID = roomID;
+      monopolyStatus[roomID].mode = selectedMode;
+      roomIDs.add(roomID);
     }
     
-    if (monopolyLobbyStatus[roomKey].hostID && monopolyLobbyStatus[roomKey].guestIDs.length == (monopolyLobbyStatus[roomKey].maxSize - 1) ) {
-      console.log(monopolyLobbyStatus);
-      console.log(monopolyLobbyStatus[roomKey]);
+    if (monopolyStatus[roomID].host && monopolyStatus[roomID].guests.length == (monopolyStatus[roomID].maxSize - 1) ) {
+      console.log(monopolyStatus);
+      console.log(monopolyStatus[roomID]);
       socket.emit("joinFailed", "Lobby is full now");
       return;
     }
     
-    socket.join(roomKey);
-    const player = new MonopolyPlayer();
-    player.name = playerID;
-    const clientsMap: ClientsMap = (clientsInfo.has(roomKey)) ? clientsInfo.get(roomKey) as ClientsMap : new ClientsMap()
+    socket.join(roomID);
+    const clientsMap: ClientsMap = (clientsInfo.has(roomID)) ? clientsInfo.get(roomID) as ClientsMap : new ClientsMap();
+    const player = new MonopolyPlayer(socket.id, playerName);
     clientsMap.setClient(socket.id, { player, socket, ready: false, positions: {x: 0, y: 0}});
-    clientsInfo.set(roomKey, clientsMap);
-    console.log(`${playerID}(${socket.id}) has connected to ${roomKey}`);
+    clientsInfo.set(roomID, clientsMap);
+    console.log(`${playerName}(${socket.id}) has connected to ${roomID}`);
 
-    if (monopolyLobbyStatus[roomKey].hostID === null) {
-      monopolyLobbyStatus[roomKey].maxSize = maxSize
-      monopolyLobbyStatus[roomKey].guestIDs = Array.from(range(0,(maxSize-1) as number)).map((_) => null as (string | null))
-      monopolyLobbyStatus[roomKey].size += 1;
-      monopolyLobbyStatus[roomKey].hostID = playerID
-    } else if (monopolyLobbyStatus[roomKey].hostID !== playerID) {
-      monopolyLobbyStatus[roomKey].size += 1;
-      monopolyLobbyStatus[roomKey].guestIDs.push(playerID);
+    if (monopolyStatus[roomID].host === null) {
+      monopolyStatus[roomID].maxSize = maxSize
+      monopolyStatus[roomID].guests = [] as string[]
+      monopolyStatus[roomID].size += 1;
+      monopolyStatus[roomID].host = playerName
+    } else if (monopolyStatus[roomID].host !== playerName) {
+      monopolyStatus[roomID].size += 1;
+      monopolyStatus[roomID].guests.push(playerName);
     }
-    console.log(monopolyLobbyStatus[roomKey])
+    console.log(monopolyStatus[roomID])
   })
 
-  socket.on("leaveLobby", (roomKey: string) => {
-    const clientsMap = clientsInfo.get(roomKey);
+  socket.on("leaveLobby", (roomID: string) => {
+    const clientsMap = clientsInfo.get(roomID);
     if(clientsMap === undefined) {
       return;
     }
@@ -505,29 +424,29 @@ io.on("connection", (socket) => {
     if(client === undefined) {
       return;
     } else {
-      if(monopolyLobbyStatus[roomKey].hostID === client.player.name) {
-        console.log(`Room ${roomKey} has canceled by the host.`);
-        socket.broadcast.to(roomKey).emit("roomCanceled");
+      if(monopolyStatus[roomID].host === client.player.username) {
+        console.log(`Room ${roomID} has canceled by the host.`);
+        socket.broadcast.to(roomID).emit("roomCanceled");
 
         clientsMap.deleteClient(socket.id);
 
-        delete monopolyStatus[roomKey];
-        roomKeys.delete(roomKey);
-      } else if (client.player.name in monopolyLobbyStatus[roomKey].guestIDs) {
-        console.log(`${client.player.name}(${socket.id}) has leaved room ${roomKey}`);
+        delete monopolyStatus[roomID];
+        roomIDs.delete(roomID);
+      } else if (client.player.username in monopolyStatus[roomID].guests) {
+        console.log(`${client.player.username}(${socket.id}) has leaved room ${roomID}`);
         clientsMap.deleteClient(socket.id);
 
-        const leaved = monopolyLobbyStatus[roomKey].guestIDs.indexOf(client.player.name);
-        const remaining_front = monopolyLobbyStatus[roomKey].guestIDs.slice(0,leaved);
-        const remaining_rear = monopolyLobbyStatus[roomKey].guestIDs.slice(leaved+1, undefined);
+        const leaved = monopolyStatus[roomID].guests.indexOf(client.player.username);
+        const remaining_front = monopolyStatus[roomID].guests.slice(0,leaved);
+        const remaining_rear = monopolyStatus[roomID].guests.slice(leaved+1, undefined);
         const remaining = remaining_front.concat(remaining_rear);
-        monopolyLobbyStatus[roomKey].guestIDs = remaining;
+        monopolyStatus[roomID].guests = remaining;
       }
     }
   });
 
-  socket.on("leaveRoom", (roomKey: string) => {
-    const clientsMap = clientsInfo.get(roomKey);
+  socket.on("leaveRoom", (roomID: string) => {
+    const clientsMap = clientsInfo.get(roomID);
     if(clientsMap === undefined) {
       return;
     }
@@ -536,38 +455,49 @@ io.on("connection", (socket) => {
       return;
     } else {
       console.log(socket.id + " has leaved this room");
-      socket.broadcast.to(roomKey).emit("roomExplosion");
+      socket.broadcast.to(roomID).emit("roomExplosion");
 
       clientsMap.deleteClient(socket.id);
-      delete monopolyStatus[roomKey];
-      roomKeys.delete(roomKey);
+      delete monopolyStatus[roomID];
+      roomIDs.delete(roomID);
     }
   });
 
-  socket.on("disconnect", (roomKey: string) => {
-    const clientsMap = clientsInfo.get(roomKey);
-    if(clientsMap === undefined) {
-      return;
+
+  socket.on("disconnect", (roomID: string) => {
+    try {
+      const clientsMap = clientsInfo.get(roomID);
+      if (clientsMap === undefined) return;
+      if(clientsMap.getClient(socket.id) !== undefined) {
+          console.log(
+              `{${getCurrentTime()}} [${socket.id}] Player "${clientsMap.getClient(socket.id)?.player.username}" has disconnected.`
+          );
+      }
+      clientsMap.deleteClient(socket.id);
+      if (currentTurnId[roomID] === socket.id) {
+          const arr = Array.from(clientsMap.values)
+              .filter((v) => v.player.balance > 0)
+              .map((v) => v.player.id);
+          let i = arr.indexOf(socket.id);
+          i = (i + 1) % arr.length;
+          currentTurnId[roomID] = arr[i];
+      }
+      clientsMap.emitAll("disconnectedPlayer", {
+          id: socket.id,
+          turn: currentTurnId[roomID],
+      });
+
+      if (Array.from(clientsMap.socketIDs).length === 0) {
+          if (monopolyStatus[roomID].isStarted) console.log("Game has Ended. Server is currently Open to new Players");
+          monopolyStatus[roomID].isStarted = false;
+      }
+    } catch (e) {
+        console.log(e);
     }
-    const client = clientsMap.getClient(socket.id)
-    if(client === undefined) {
-      return;
-    } else if(client.player.balance > 0) {
-      console.log(client.socket.id + " has leaved this room");
-      socket.broadcast.to(roomKey).emit("roomExplosion");
+  })
 
-      clientsInfo.delete(roomKey)
-      delete monopolyStatus[roomKey];
-      roomKeys.delete(roomKey);
-    } else {
-      console.log(client.socket.id + " has leaved this room");
-
-      clientsMap.deleteClient(client.socket.id)
-    }
-  });
-
-  socket.on("ready", (roomKey: string, args: {ready?: boolean}) => {
-    const clientsMap = clientsInfo.get(roomKey);
+  socket.on("ready", (roomID: string, args: {ready?: boolean}) => {
+    const clientsMap = clientsInfo.get(roomID);
     if(clientsMap === undefined) {
       return;
     }
@@ -579,16 +509,35 @@ io.on("connection", (socket) => {
       })
     }
 
-    socket.broadcast.to(roomKey).emit("ready", {
-      socketId: socket.id,
+    const readys = Array.from(clientsMap.values).map((_client) => _client.ready)
+    clientsMap.emitAll("ready", {
+      id: socket.id,
       state: client.ready,
+      selectedMode: monopolyStatus[roomID].mode
     })
+
+    if(!readys.includes(false)) {
+      console.log("Game has Started, No more Players can join the Server");
+
+      const guests = monopolyStatus[roomID].guests;
+      const playerNames = guests.concat([monopolyStatus[roomID].host as string]);
+      const shuffledPlayerNames: string[] = shuffleArray(playerNames);
+      monopolyStatus[roomID].players = shuffledPlayerNames
+      
+      clientsMap.pipeForEachModifier([
+        (ci) => {
+          const new_ci = ci
+          new_ci.player.ord = shuffledPlayerNames.indexOf(new_ci.player.username)
+          return new_ci
+        }
+      ])
+      
+      monopolyStatus[roomID].isStarted = true;
+      clientsMap.emitAll("start-game", {})
+    }
   })
 
-  const initializeGame = (roomKey: string, firstTurnID: string, clientsMap: ClientsMap) => {
-    console.log(`Game has Started, No more Players can join the Server`);
-
-    currentTurnId[roomKey] = firstTurnID
+  const attachEvents = (roomID: string, clientsMap: ClientsMap) => {
 
     eventsRegistry.register("unjail", (client, _logger) => {
       return (option: "card" | "pay") => {
@@ -603,19 +552,19 @@ io.on("connection", (socket) => {
       }
     })
 
-    eventsRegistry.register("rollDice", (client, logger) => {
+    eventsRegistry.register("roll_dice", (client, logger) => {
       return () => {
         try {
           const first = Math.floor(Math.random() * 6) + 1;
           const second = Math.floor(Math.random() * 6) + 1;
-          const x = `{${getCurrentTime()}} [${client.socket.id}] Player "${client.player.name}" rolled a [${first},${second}].`;
+          const x = `{${getCurrentTime()}} [${client.socket.id}] Player "${client.player.username}" rolled a [${first},${second}].`;
           logger(x);
           console.log(x);
           const sum = first + second;
           const pos = (client.player.position + sum) % 40;
-          clientsMap.emitAll("diceRollResult", {
+          clientsMap.emitAll("dice_roll_result", {
             listOfNums: [first, second, pos],
-            turnId: currentTurnId[roomKey],
+            turnId: currentTurnId[roomID],
           });
         } catch (e) {
           console.log(e);
@@ -623,16 +572,16 @@ io.on("connection", (socket) => {
       }
     })
 
-    eventsRegistry.register("chorchRoll", (_client, _logger) => {
+    eventsRegistry.register("chorch_roll", (_client, _logger) => {
       return (args: { is_chance: boolean; rolls: number }) => {
         try {
             const arr = args.is_chance ? monopolyJSON.chance : monopolyJSON.communitychest;
             const randomElement = arr[Math.floor(Math.random() * arr.length)];
-            clientsMap.emitAll("chorchResult", {
+            clientsMap.emitAll("chorch_result", {
                 element: randomElement,
                 is_chance: args.is_chance,
                 rolls: args.rolls,
-                turnId: currentTurnId[roomKey],
+                turnId: currentTurnId[roomID],
             });
         } catch (e) {
             console.log(e);
@@ -640,7 +589,7 @@ io.on("connection", (socket) => {
       }
     })
 
-    eventsRegistry.register("playerUpdate", (_client, _logger) => {
+    eventsRegistry.register("player_update", (_client, _logger) => {
       return (args: { playerId: string; pJson: MonopolyPlayerJSON }) => {
         const xplayer = clientsMap.getClient(args.playerId);
         if (xplayer === undefined) return;
@@ -654,19 +603,19 @@ io.on("connection", (socket) => {
       return (playerInfo: MonopolyPlayerJSON) => {
         try {
             client.player.recieveJson(playerInfo);
-            if (currentTurnId[roomKey] != socket.id) return;
+            if (currentTurnId[roomID] != socket.id) return;
             const arr = Array.from(clientsMap.values)
                 .filter((v) => v.player.balance > 0).sort((a, b) => a.player.ord - b.player.ord)
                 .map((v) => v.player.id);
             let i = arr.indexOf(socket.id);
             i = (i + 1) % arr.length;
-            currentTurnId[roomKey] = arr[i];
+            currentTurnId[roomID] = arr[i];
 
             clientsMap.emitAll("turn-finished", {
                 from: socket.id,
-                turnId: currentTurnId[roomKey],
+                turnId: currentTurnId[roomID],
                 pJson: client.player.toJson(),
-                WinningMode: monopolyStatus[roomKey].mode.WinningMode,
+                WinningMode: monopolyStatus[roomID].mode.WinningMode,
             });
         } catch (e) {
             console.log(e);
@@ -719,23 +668,23 @@ io.on("connection", (socket) => {
 
     eventsRegistry.register("trade", (_client, _logger) => {
       return () => {
-        if (!monopolyStatus[roomKey].mode.AllowDeals) return;
+        if (!monopolyStatus[roomID].mode.AllowDeals) return;
         clientsMap.emitAll("trade", {});
       }
     })
 
-    eventsRegistry.register("cancelTrade", (_client, _logger) => {
+    eventsRegistry.register("cancel-trade", (_client, _logger) => {
       return () => {
         return () => {
-          if (!monopolyStatus[roomKey].mode.AllowDeals) return;
-          clientsMap.emitAll("cancelTrade", {});
+          if (!monopolyStatus[roomID].mode.AllowDeals) return;
+          clientsMap.emitAll("cancel-trade", {});
         }
       }
     })
 
     eventsRegistry.register("submit-trade", (_client, _logger) => {
       return (x: GameTrading) => {
-        if (!monopolyStatus[roomKey].mode.AllowDeals) return;
+        if (!monopolyStatus[roomID].mode.AllowDeals) return;
         const turnPlayer = clientsMap.getClient(x.turnPlayer.id);
         const againstPlayer = clientsMap.getClient(x.againstPlayer.id);
         if (turnPlayer === undefined || againstPlayer === undefined) return;
@@ -772,68 +721,63 @@ io.on("connection", (socket) => {
           {
             pJsons: [turnPlayer.player.toJson(), againstPlayer.player.toJson()] as [MonopolyPlayerJSON, MonopolyPlayerJSON],
             action: `
-              ${turnPlayer.player.name} done a trade with ${againstPlayer.player.name}
+              ${turnPlayer.player.username} done a trade with ${againstPlayer.player.username}
             `,
           }
         );
       }
     })
 
-    eventsRegistry.register("tradeUpdate", (_client, _logger) => {
+    eventsRegistry.register("trad-update", (_client, _logger) => {
       return (x: GameTrading) => {
-        if (!monopolyStatus[roomKey].mode.AllowDeals) return;
+        if (!monopolyStatus[roomID].mode.AllowDeals) return;
         clientsMap.emitAll("trade-update", x);
       }
     })
 
     eventsRegistry.attach(clientsMap)
-
-    socket.broadcast.to(roomKey).emit("startGame", {})
   }
 
 
-  socket.on("triggerStartGame", (roomKey: string) => {
-    const clientsMap = clientsInfo.get(roomKey);
-    if(clientsMap === undefined) {
-      return;
-    }
-    const client = clientsMap.getClient(socket.id)
-    if(client !== undefined) {
-      if(client.player.name === monopolyLobbyStatus[roomKey].hostID) {
-        const notYetReadyPlayerIDs = Array.from(clientsMap.values).filter((ci) => !ci.ready).map((ci) => ci.player.name)
-        if(notYetReadyPlayerIDs.length > 0) {
-          client.socket.emit("notYetToStart", {notYetReadyPlayerIDs})
-        }
-        else {
-          const guests = monopolyLobbyStatus[roomKey].guestIDs.filter((gn) => (gn !== null)).map((gn) => gn as string)
-          const playerIDs = guests.concat([client.player.name])
-          const shuffledPlayerIDs: string[] = EArray(playerIDs).shuffle().map((pn) => pn as string)
-          
-          clientsMap.pipeForEachModifier([
-            (ci) => {
-              const new_ci = ci
-              new_ci.player.ord = shuffledPlayerIDs.indexOf(new_ci.player.name)
-              return new_ci
-            }
-          ])
+  socket.on("name", (name: string, roomID: string, mode: MonopolyMode) => {
+    try {
+        const currentRoom = clientsInfo.get(roomID) ?? new ClientsMap()
 
-          monopolyStatus[roomKey] = {
-            roomKey,
-            size: monopolyLobbyStatus[roomKey].size,
-            maxSize: monopolyLobbyStatus[roomKey].maxSize,
-            hostID: client.player.name,
-            guestIDs: guests,
-            playerIDs: shuffledPlayerIDs,
-            isStarted: true,
-            isEnded: false,
-            mode: monopolyLobbyStatus[roomKey].mode
-          }
+        const player = new MonopolyPlayer(socket.id, name, mode.startingCash);
 
-          initializeGame(roomKey, shuffledPlayerIDs[0], clientsMap)
+        
+
+        // handle current id =>
+        if (!currentTurnId[roomID] || (currentTurnId[roomID] && (currentTurnId[roomID] === "" || !Array.from(currentRoom.socketIDs).includes(currentTurnId[roomID])))) {
+            currentTurnId[roomID] = socket.id;
         }
-      }
+        currentRoom.setClient(socket.id, {
+            player: player,
+            socket: socket,
+            ready: false,
+            positions: { x: 0, y: 0 },
+        });
+        console.log(`{${getCurrentTime()}} [${socket.id}] Player "${player.username}" has connected.`);
+        const other_players = [];
+        for (const x of Array.from(currentRoom.values)) {
+            other_players.push(x.player.toJson());
+        }
+        socket.emit("initials", {
+            turn_id: currentTurnId[roomID],
+            other_players,
+            selectedMode: mode,
+        });
+        currentRoom.emitExcepts(socket.id, "new-player", player.toJson());
+
+        // handle all events from here on!
+        // game sockets
+        attachEvents(roomID, currentRoom)
+        clientsInfo.set(roomID, currentRoom)
+    } catch (e) {
+        console.log(e);
     }
-  })
+});
+
 });
 
 const greet = (context: Context) => {
